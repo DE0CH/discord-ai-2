@@ -1,0 +1,23 @@
+{
+  "name": "discord-bot-functions",
+  "private": true,
+  "engines": {
+    "node": "22"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "register:command": "tsx scripts/register-command.ts"
+  },
+  "dependencies": {
+    "firebase-functions": "^7.2.2",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.37",
+    "tsx": "^4.20.6",
+    "typescript": "^5.5.4"
+  }
+}
