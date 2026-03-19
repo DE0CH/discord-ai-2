@@ -72,46 +72,88 @@ function formatDiscordMessage(m: any): string {
 
   // Discord "interaction" message (slash command invoked)
   const interactionName =
+    // Some Discord payloads use `interaction_metadata.name`, others use `command_name`.
     typeof m?.interaction_metadata?.name === "string"
       ? m.interaction_metadata.name
-      : typeof m?.interaction?.name === "string"
-        ? m.interaction.name
-        : "";
+      : typeof m?.interaction_metadata?.command_name === "string"
+        ? m.interaction_metadata.command_name
+        : typeof m?.interaction?.name === "string"
+          ? m.interaction.name
+          : typeof m?.interaction?.command_name === "string"
+            ? m.interaction.command_name
+            : "";
 
   // Newer payloads may include options in interaction metadata; older may not.
-  const interactionOptions = m?.interaction_metadata?.options;
+  const interactionOptions = m?.interaction_metadata?.options ?? m?.interaction?.options;
   const interactionOptsStr = formatCommandOptions(interactionOptions);
 
-  let content = typeof m?.content === "string" ? m.content.trim() : "";
+  const systemContent = typeof m?.system_content === "string" ? m.system_content.trim() : "";
+  const cleanContent = typeof m?.clean_content === "string" ? m.clean_content.trim() : "";
+  const contentValue = m?.content;
+  let content =
+    typeof contentValue === "string" ? contentValue.trim() : contentValue == null ? "" : String(contentValue).trim();
+
   if (!content) {
-    const attachmentNames =
-      Array.isArray(m?.attachments) && m.attachments.length > 0
-        ? m.attachments
-            .map((a: any) => (typeof a?.filename === "string" ? a.filename : typeof a?.url === "string" ? a.url : "attachment"))
-            .slice(0, 3)
-        : [];
-    const embedHints =
-      Array.isArray(m?.embeds) && m.embeds.length > 0
-        ? m.embeds
-            .map((e: any) => (typeof e?.title === "string" ? e.title : typeof e?.url === "string" ? e.url : "embed"))
-            .slice(0, 2)
-        : [];
-    const stickerNames =
-      Array.isArray(m?.sticker_items) && m.sticker_items.length > 0
-        ? m.sticker_items.map((s: any) => (typeof s?.name === "string" ? s.name : "sticker")).slice(0, 3)
-        : [];
+    if (systemContent) {
+      content = systemContent;
+    } else if (cleanContent) {
+      content = cleanContent;
+    } else {
+      const hasAttachments = Array.isArray(m?.attachments) && m.attachments.length > 0;
+      const hasEmbeds = Array.isArray(m?.embeds) && m.embeds.length > 0;
+      const hasStickers = Array.isArray(m?.sticker_items) && m.sticker_items.length > 0;
+      const hasComponents = Array.isArray(m?.components) && m.components.length > 0;
+      const hasRich =
+        hasAttachments || hasEmbeds || hasStickers || hasComponents || (Array.isArray(m?.stickers) && m.stickers.length > 0);
 
-    const parts: string[] = [];
-    if (attachmentNames.length > 0) parts.push(`attachments: ${attachmentNames.join(", ")}`);
-    if (embedHints.length > 0) parts.push(`embeds: ${embedHints.join(", ")}`);
-    if (stickerNames.length > 0) parts.push(`stickers: ${stickerNames.join(", ")}`);
+      const contentWithheldHint =
+        // When the privileged intent isn't configured/approved, Discord returns empty values for
+        // `content`, `embeds`, `attachments`, and `components`.
+        !interactionName &&
+        !systemContent &&
+        !cleanContent &&
+        !hasRich &&
+        (!contentValue || (typeof contentValue === "string" && contentValue.length === 0))
+          ? "(content withheld by Discord: enable MESSAGE_CONTENT privileged intent)"
+          : "";
 
-    if (interactionName) {
-      const slash = `/${interactionName}${interactionOptsStr ? " " + interactionOptsStr : ""}`;
-      parts.unshift(`command: ${slash}`);
+      if (contentWithheldHint) {
+        content = contentWithheldHint;
+      } else {
+        const attachmentNames = hasAttachments
+          ? m.attachments
+              .map((a: any) =>
+                typeof a?.filename === "string"
+                  ? a.filename
+                  : typeof a?.url === "string"
+                    ? a.url
+                    : "attachment"
+              )
+              .slice(0, 3)
+          : [];
+
+        const embedHints = hasEmbeds
+          ? m.embeds
+              .map((e: any) => (typeof e?.title === "string" ? e.title : typeof e?.url === "string" ? e.url : "embed"))
+              .slice(0, 2)
+          : [];
+
+        const stickerNames = hasStickers ? m.sticker_items.map((s: any) => (typeof s?.name === "string" ? s.name : "sticker")).slice(0, 3) : [];
+
+        const parts: string[] = [];
+        if (attachmentNames.length > 0) parts.push(`attachments: ${attachmentNames.join(", ")}`);
+        if (embedHints.length > 0) parts.push(`embeds: ${embedHints.join(", ")}`);
+        if (stickerNames.length > 0) parts.push(`stickers: ${stickerNames.join(", ")}`);
+        if (hasComponents) parts.push(`components: ${m.components.length}`);
+
+        if (interactionName) {
+          const slash = `/${interactionName}${interactionOptsStr ? " " + interactionOptsStr : ""}`;
+          parts.unshift(`command: ${slash}`);
+        }
+
+        content = parts.length > 0 ? `(${parts.join(" | ")})` : "(non-text message)";
+      }
     }
-
-    content = parts.length > 0 ? `(${parts.join(" | ")})` : "(non-text message)";
   } else if (interactionName) {
     // If Discord includes both content and an interaction tag, keep both.
     const slash = `/${interactionName}${interactionOptsStr ? " " + interactionOptsStr : ""}`;
@@ -126,8 +168,29 @@ function formatDiscordMessage(m: any): string {
 
 function formatDiscordHistory(apiJson: any): string {
   if (!Array.isArray(apiJson)) return JSON.stringify(apiJson);
-  // Discord returns newest-first; keep that order (most recent -> oldest).
-  return apiJson.map((m) => formatDiscordMessage(m)).join("\n");
+  // Discord returns newest-first; reverse so it's chronological (oldest -> newest).
+  return apiJson
+    .slice()
+    .reverse()
+    .map((m) => formatDiscordMessage(m))
+    .join("\n");
+}
+
+function buildDiscordTranscript(apiJson: any, maxChars: number): string {
+  const full = formatDiscordHistory(apiJson);
+  if (full.length <= maxChars) return full;
+  // Keep the tail of the transcript (most recent messages) while cutting on line boundaries.
+  const lines = full.split("\n");
+  const kept: string[] = [];
+  let total = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    const add = line.length + (kept.length > 0 ? 1 : 0);
+    if (total + add > maxChars) break;
+    kept.push(line);
+    total += add;
+  }
+  return kept.reverse().join("\n");
 }
 
 export const discord = onRequest({ region: "us-central1", invoker: "public" }, async (req, res) => {
@@ -232,10 +295,6 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
 
       webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
 
-      const promptOption = interaction.data?.options?.find((o) => o.name === "prompt");
-      const prompt =
-        typeof promptOption?.value === "string" && promptOption.value.trim().length > 0 ? promptOption.value.trim() : "";
-
       const userName =
         interaction.member?.user?.global_name ??
         interaction.member?.user?.username ??
@@ -251,16 +310,17 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
         headers: { Authorization: `Bot ${botToken}` }
       });
 
+      if (!discordResp.ok) {
+        const errText = await discordResp.text().catch(() => "");
+        throw new Error(`Discord history fetch failed (${discordResp.status}): ${errText.slice(0, 300)}`);
+      }
+
       const apiJson = await discordResp.json();
-      const historyText = formatDiscordHistory(apiJson);
       // Keep enough room for the model to produce an output; long histories
       // increase the chance of cut-off responses.
-      const MAX_HISTORY_CHARS = 12_000;
-      const truncatedHistoryText =
-        historyText.length > MAX_HISTORY_CHARS ? historyText.slice(historyText.length - MAX_HISTORY_CHARS) : historyText;
-
-      const userInstruction =
-        prompt.length > 0 ? `The user ${userName} gives this instruction: ${prompt}` : "";
+      const MAX_TRANSCRIPT_CHARS = 12_000;
+      console.log(apiJson);
+      const transcript = buildDiscordTranscript(apiJson, MAX_TRANSCRIPT_CHARS);
 
       const aiResp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -273,18 +333,31 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
           model: "claude-sonnet-4-6",
           // Output cap for Discord-sized answers.
           max_tokens: 1024,
-          system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with a single Discord message in plain text (no JSON).\n\nInstruction: participate by forming a reply. ${userInstruction}`,
+          system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with a single Discord message in plain text (no JSON).\n\nInstruction: participate by forming a reply.`,
           messages: [
             {
               role: "user",
-              content: `Here is the Discord channel history (chronological). It includes explicit slash command context when present:\n\n${truncatedHistoryText}`
+              content:
+                `Here is the Discord channel transcript (chronological, oldest -> newest):\n\n` +
+                transcript +
+                `\n\nThe user ${userName} invoked /ai. Write the next assistant message as a reply to the latest context in the transcript.`
             }
           ]
         })
       });
 
-      const aiData = await aiResp.json();
-      const aiText = aiData?.content?.[0]?.text;
+      const aiData = await aiResp.json().catch(() => null);
+      if (!aiResp.ok) {
+        const msg =
+          typeof (aiData as any)?.error?.message === "string"
+            ? (aiData as any).error.message
+            : typeof (aiData as any)?.message === "string"
+              ? (aiData as any).message
+              : JSON.stringify(aiData);
+        throw new Error(`Anthropic error (${aiResp.status}): ${String(msg).slice(0, 500)}`);
+      }
+
+      const aiText = (aiData as any)?.content?.[0]?.text;
       const message =
         typeof aiText === "string" && aiText.trim().length > 0
           ? aiText.trim()
@@ -330,3 +403,6 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
     data: { content: "Unknown command" }
   });
 });
+
+// Export these for local rapid-prototyping scripts.
+export { formatDiscordMessage, formatDiscordHistory, buildDiscordTranscript };

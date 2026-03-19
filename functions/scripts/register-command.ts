@@ -38,14 +38,6 @@ async function main(): Promise<void> {
       name: "ai",
       description: "Respond with AI using recent channel chat history",
       type: 1,
-      options: [
-        {
-          name: "prompt",
-          description: "Optional instruction for the AI",
-          type: 3,
-          required: false
-        }
-      ]
     }
   ];
 
