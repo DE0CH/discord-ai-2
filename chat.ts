@@ -32,11 +32,11 @@ const response = await fetch("https://api.anthropic.com/v1/messages", {
   body: JSON.stringify({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
-    system: `You are a helpful assistant. Respond with JSON in the format: {"message": "..."}`,
+    system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Now the user has asked you to participate in the conversation. Respond with JSON in the format: {"message": "..."}\n\nInstruction: ${instruction}`,
     messages: [
       {
         role: "user",
-        content: `Here is the Discord conversation:\n\n${transcript}\n\n${instruction}`,
+        content: `Here is the Discord conversation:\n\n${transcript}`,
       },
     ],
   }),
