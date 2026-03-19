@@ -157,7 +157,13 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
 
       const apiJson = await discordResp.json();
       const historyJson = JSON.stringify(apiJson);
-      const truncatedHistoryJson = historyJson;
+      // Keep enough room for the model to produce an output; long histories
+      // increase the chance of cut-off responses.
+      const MAX_HISTORY_CHARS = 12_000;
+      const truncatedHistoryJson =
+        historyJson.length > MAX_HISTORY_CHARS
+          ? historyJson.slice(historyJson.length - MAX_HISTORY_CHARS)
+          : historyJson;
 
       const userInstruction =
         prompt.length > 0 ? `The user ${userName} gives this instruction: ${prompt}` : "";
@@ -171,8 +177,9 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 512,
-          system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with JSON in the format: {"message": "..."}.\n\nInstruction: participate by forming a reply. ${userInstruction}`,
+          // Output cap for Discord-sized answers.
+          max_tokens: 1024,
+          system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with a single Discord message in plain text (no JSON).\n\nInstruction: participate by forming a reply. ${userInstruction}`,
           messages: [
             {
               role: "user",
@@ -183,14 +190,17 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
       });
 
       const aiData = await aiResp.json();
-      const aiText = aiData?.content?.[0]?.text as string;
-      const parsed = JSON.parse(aiText) as { message?: string };
-      const message = parsed.message ?? aiText;
+      const aiText = aiData?.content?.[0]?.text;
+      const message =
+        typeof aiText === "string" && aiText.trim().length > 0
+          ? aiText.trim()
+          : "Sorry - I couldn't produce a response.";
+      const safeMessage = message.slice(0, 1900);
 
       await fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: message })
+        body: JSON.stringify({ content: safeMessage })
       });
 
       return;
