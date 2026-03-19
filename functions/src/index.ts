@@ -126,9 +126,8 @@ function formatDiscordMessage(m: any): string {
 
 function formatDiscordHistory(apiJson: any): string {
   if (!Array.isArray(apiJson)) return JSON.stringify(apiJson);
-  // Discord returns newest-first; reverse to chronological.
-  const chronological = [...apiJson].reverse();
-  return chronological.map((m) => formatDiscordMessage(m)).join("\n");
+  // Discord returns newest-first; keep that order (most recent -> oldest).
+  return apiJson.map((m) => formatDiscordMessage(m)).join("\n");
 }
 
 export const discord = onRequest({ region: "us-central1", invoker: "public" }, async (req, res) => {
