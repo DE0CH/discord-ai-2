@@ -34,6 +34,103 @@ const PONG_RESPONSE_TYPE = 1;
 const CHANNEL_MESSAGE_WITH_SOURCE = 4;
 const DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5;
 
+function formatCommandOptions(options: any): string {
+  if (!Array.isArray(options) || options.length === 0) return "";
+  const parts: string[] = [];
+
+  for (const o of options) {
+    const name = typeof o?.name === "string" ? o.name : "option";
+
+    if (Array.isArray(o?.options) && o.options.length > 0) {
+      // Subcommand / group style: { name, options: [...] }
+      const nested = formatCommandOptions(o.options);
+      parts.push(nested.length > 0 ? `${name} ${nested}` : name);
+      continue;
+    }
+
+    const value =
+      typeof o?.value === "string" || typeof o?.value === "number" || typeof o?.value === "boolean"
+        ? String(o.value)
+        : o?.value == null
+          ? ""
+          : JSON.stringify(o.value);
+
+    parts.push(value.length > 0 ? `${name}: ${value}` : name);
+  }
+
+  return parts.join(" ");
+}
+
+function formatDiscordMessage(m: any): string {
+  const author =
+    m?.author?.global_name ??
+    m?.author?.username ??
+    m?.member?.nick ??
+    (typeof m?.author?.id === "string" ? `user:${m.author.id}` : "unknown");
+
+  const timestamp = typeof m?.timestamp === "string" ? m.timestamp : "";
+
+  // Discord "interaction" message (slash command invoked)
+  const interactionName =
+    typeof m?.interaction_metadata?.name === "string"
+      ? m.interaction_metadata.name
+      : typeof m?.interaction?.name === "string"
+        ? m.interaction.name
+        : "";
+
+  // Newer payloads may include options in interaction metadata; older may not.
+  const interactionOptions = m?.interaction_metadata?.options;
+  const interactionOptsStr = formatCommandOptions(interactionOptions);
+
+  let content = typeof m?.content === "string" ? m.content.trim() : "";
+  if (!content) {
+    const attachmentNames =
+      Array.isArray(m?.attachments) && m.attachments.length > 0
+        ? m.attachments
+            .map((a: any) => (typeof a?.filename === "string" ? a.filename : typeof a?.url === "string" ? a.url : "attachment"))
+            .slice(0, 3)
+        : [];
+    const embedHints =
+      Array.isArray(m?.embeds) && m.embeds.length > 0
+        ? m.embeds
+            .map((e: any) => (typeof e?.title === "string" ? e.title : typeof e?.url === "string" ? e.url : "embed"))
+            .slice(0, 2)
+        : [];
+    const stickerNames =
+      Array.isArray(m?.sticker_items) && m.sticker_items.length > 0
+        ? m.sticker_items.map((s: any) => (typeof s?.name === "string" ? s.name : "sticker")).slice(0, 3)
+        : [];
+
+    const parts: string[] = [];
+    if (attachmentNames.length > 0) parts.push(`attachments: ${attachmentNames.join(", ")}`);
+    if (embedHints.length > 0) parts.push(`embeds: ${embedHints.join(", ")}`);
+    if (stickerNames.length > 0) parts.push(`stickers: ${stickerNames.join(", ")}`);
+
+    if (interactionName) {
+      const slash = `/${interactionName}${interactionOptsStr ? " " + interactionOptsStr : ""}`;
+      parts.unshift(`command: ${slash}`);
+    }
+
+    content = parts.length > 0 ? `(${parts.join(" | ")})` : "(non-text message)";
+  } else if (interactionName) {
+    // If Discord includes both content and an interaction tag, keep both.
+    const slash = `/${interactionName}${interactionOptsStr ? " " + interactionOptsStr : ""}`;
+    content = `(command: ${slash}) ${content}`;
+  }
+
+  const prefixParts = [];
+  if (timestamp) prefixParts.push(timestamp);
+  prefixParts.push(author);
+  return `[${prefixParts.join(" ")}] ${content}`;
+}
+
+function formatDiscordHistory(apiJson: any): string {
+  if (!Array.isArray(apiJson)) return JSON.stringify(apiJson);
+  // Discord returns newest-first; reverse to chronological.
+  const chronological = [...apiJson].reverse();
+  return chronological.map((m) => formatDiscordMessage(m)).join("\n");
+}
+
 export const discord = onRequest({ region: "us-central1", invoker: "public" }, async (req, res) => {
   const publicKey = process.env.DISCORD_PUBLIC_KEY;
   if (!publicKey) {
@@ -109,7 +206,7 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
     }
 
     const apiJson = await discordResp.json();
-    const content = JSON.stringify(apiJson);
+    const content = formatDiscordHistory(apiJson);
 
     res.json({
       type: CHANNEL_MESSAGE_WITH_SOURCE,
@@ -156,14 +253,12 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
       });
 
       const apiJson = await discordResp.json();
-      const historyJson = JSON.stringify(apiJson);
+      const historyText = formatDiscordHistory(apiJson);
       // Keep enough room for the model to produce an output; long histories
       // increase the chance of cut-off responses.
       const MAX_HISTORY_CHARS = 12_000;
-      const truncatedHistoryJson =
-        historyJson.length > MAX_HISTORY_CHARS
-          ? historyJson.slice(historyJson.length - MAX_HISTORY_CHARS)
-          : historyJson;
+      const truncatedHistoryText =
+        historyText.length > MAX_HISTORY_CHARS ? historyText.slice(historyText.length - MAX_HISTORY_CHARS) : historyText;
 
       const userInstruction =
         prompt.length > 0 ? `The user ${userName} gives this instruction: ${prompt}` : "";
@@ -183,7 +278,7 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
           messages: [
             {
               role: "user",
-              content: `Here is the Discord channel chat history JSON:\n\n${truncatedHistoryJson}`
+              content: `Here is the Discord channel history (chronological). It includes explicit slash command context when present:\n\n${truncatedHistoryText}`
             }
           ]
         })
