@@ -91,7 +91,7 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
 
     // Fetch recent messages from the current channel.
     const discordResp = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages?limit=10`,
+      `https://discord.com/api/v10/channels/${channelId}/messages?limit=100`,
       {
         method: "GET",
         headers: {
