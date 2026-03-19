@@ -20,6 +20,19 @@ async function main(): Promise<void> {
       name: "ping",
       description: "Replies with pong",
       type: 1
+    },
+    {
+      name: "echo-chat",
+      description: "Echoes previous /echo-chat inputs",
+      type: 1,
+      options: [
+        {
+          name: "message",
+          description: "Message to append to the echoed history",
+          type: 3,
+          required: false
+        }
+      ]
     }
   ];
 
