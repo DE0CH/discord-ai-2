@@ -119,75 +119,106 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
   }
 
   if (interaction.type === APP_COMMAND_TYPE && interaction.data?.name === "ai") {
-    const botToken = process.env.DISCORD_BOT_TOKEN!;
-    const anthropicApiKey = process.env.ANTHROPIC_API_KEY!;
-    const channelId = interaction.channel_id!;
-    const applicationId = interaction.application_id!;
-    const interactionToken = interaction.token!;
+    let webhookUrl: string | null = null;
 
-    const promptOption = interaction.data?.options?.find((o) => o.name === "prompt");
-    const prompt =
-      typeof promptOption?.value === "string" && promptOption.value.trim().length > 0 ? promptOption.value.trim() : "";
+    try {
+      const botToken = process.env.DISCORD_BOT_TOKEN;
+      const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      const channelId = interaction.channel_id;
+      const applicationId = interaction.application_id;
+      const interactionToken = interaction.token;
 
-    const userName =
-      interaction.member?.user?.global_name ??
-      interaction.member?.user?.username ??
-      interaction.user?.global_name ??
-      interaction.user?.username ??
-      "User";
+      if (!botToken) throw new Error("Missing DISCORD_BOT_TOKEN");
+      if (!anthropicApiKey) throw new Error("Missing ANTHROPIC_API_KEY");
+      if (!channelId) throw new Error("Missing channel_id in interaction");
+      if (!applicationId) throw new Error("Missing application_id in interaction");
+      if (!interactionToken) throw new Error("Missing token in interaction");
 
-    // Acknowledge quickly to avoid Discord timing out while we call external APIs.
-    res.json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
 
-    const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
+      const promptOption = interaction.data?.options?.find((o) => o.name === "prompt");
+      const prompt =
+        typeof promptOption?.value === "string" && promptOption.value.trim().length > 0 ? promptOption.value.trim() : "";
 
-    const discordResp = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=100`, {
-      method: "GET",
-      headers: { Authorization: `Bot ${botToken}` }
-    });
+      const userName =
+        interaction.member?.user?.global_name ??
+        interaction.member?.user?.username ??
+        interaction.user?.global_name ??
+        interaction.user?.username ??
+        "User";
 
-    const apiJson = await discordResp.json();
-    const historyJson = JSON.stringify(apiJson);
-    const truncatedHistoryJson = historyJson;
+      // Acknowledge quickly to avoid Discord timing out while we call external APIs.
+      res.json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
 
-    const userInstruction =
-      prompt.length > 0
-        ? `The user ${userName} gives this instruction: ${prompt}`
-        : "";
+      const discordResp = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=100`, {
+        method: "GET",
+        headers: { Authorization: `Bot ${botToken}` }
+      });
 
-    const aiResp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicApiKey,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 512,
-        system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with JSON in the format: {"message": "..."}.\n\nInstruction: participate by forming a reply. ${userInstruction}`,
-        messages: [
-          {
-            role: "user",
-            content: `Here is the Discord channel chat history JSON:\n\n${truncatedHistoryJson}`
-          }
-        ]
-      })
-    });
+      const apiJson = await discordResp.json();
+      const historyJson = JSON.stringify(apiJson);
+      const truncatedHistoryJson = historyJson;
 
-    const aiData = await aiResp.json();
-    const aiText = aiData?.content?.[0]?.text as string;
-    const parsed = JSON.parse(aiText) as { message?: string };
-    const message = parsed.message ?? aiText;
+      const userInstruction =
+        prompt.length > 0 ? `The user ${userName} gives this instruction: ${prompt}` : "";
 
-  
-    await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: message })
-    });
+      const aiResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": anthropicApiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 512,
+          system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with JSON in the format: {"message": "..."}.\n\nInstruction: participate by forming a reply. ${userInstruction}`,
+          messages: [
+            {
+              role: "user",
+              content: `Here is the Discord channel chat history JSON:\n\n${truncatedHistoryJson}`
+            }
+          ]
+        })
+      });
 
-    return;
+      const aiData = await aiResp.json();
+      const aiText = aiData?.content?.[0]?.text as string;
+      const parsed = JSON.parse(aiText) as { message?: string };
+      const message = parsed.message ?? aiText;
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: message })
+      });
+
+      return;
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : String(error);
+      const safeMessage = `Error: ${errMessage}`.slice(0, 1900);
+
+      // If we've already deferred, Discord expects us to use the interaction webhook.
+      if (webhookUrl) {
+        try {
+          await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: safeMessage })
+          });
+        } catch {
+          // Ignore secondary failures; nothing else we can do without a valid webhookUrl.
+        }
+        return;
+      }
+
+      // If we haven't deferred yet, respond with a normal interaction message.
+      res.json({
+        type: CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { content: safeMessage }
+      });
+      return;
+    }
   }
 
   res.json({
