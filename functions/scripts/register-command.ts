@@ -33,6 +33,19 @@ async function main(): Promise<void> {
           required: false
         }
       ]
+    },
+    {
+      name: "ai",
+      description: "Respond with AI using recent channel chat history",
+      type: 1,
+      options: [
+        {
+          name: "prompt",
+          description: "Optional instruction for the AI",
+          type: 3,
+          required: false
+        }
+      ]
     }
   ];
 
@@ -57,7 +70,7 @@ async function main(): Promise<void> {
     throw new Error(`Failed to register slash command (${scope}). HTTP ${response.status}: ${text}`);
   }
 
-  console.log(`Registered /ping command (${scope}).`);
+  console.log(`Registered slash commands (${scope}).`);
   console.log(text);
 }
 

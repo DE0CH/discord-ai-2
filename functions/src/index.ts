@@ -11,6 +11,8 @@ type DiscordInteraction = {
       value?: unknown;
     }>;
   };
+  application_id?: string;
+  token?: string;
   channel_id?: string;
   member?: {
     user?: {
@@ -30,6 +32,7 @@ const PING_TYPE = 1;
 const APP_COMMAND_TYPE = 2;
 const PONG_RESPONSE_TYPE = 1;
 const CHANNEL_MESSAGE_WITH_SOURCE = 4;
+const DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5;
 
 export const discord = onRequest({ region: "us-central1", invoker: "public" }, async (req, res) => {
   const publicKey = process.env.DISCORD_PUBLIC_KEY;
@@ -112,6 +115,78 @@ export const discord = onRequest({ region: "us-central1", invoker: "public" }, a
       type: CHANNEL_MESSAGE_WITH_SOURCE,
       data: { content: content.length > 1900 ? content.slice(0, 1900) : content }
     });
+    return;
+  }
+
+  if (interaction.type === APP_COMMAND_TYPE && interaction.data?.name === "ai") {
+    const botToken = process.env.DISCORD_BOT_TOKEN!;
+    const anthropicApiKey = process.env.ANTHROPIC_API_KEY!;
+    const channelId = interaction.channel_id!;
+    const applicationId = interaction.application_id!;
+    const interactionToken = interaction.token!;
+
+    const promptOption = interaction.data?.options?.find((o) => o.name === "prompt");
+    const prompt =
+      typeof promptOption?.value === "string" && promptOption.value.trim().length > 0 ? promptOption.value.trim() : "";
+
+    const userName =
+      interaction.member?.user?.global_name ??
+      interaction.member?.user?.username ??
+      interaction.user?.global_name ??
+      interaction.user?.username ??
+      "User";
+
+    // Acknowledge quickly to avoid Discord timing out while we call external APIs.
+    res.json({ type: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+
+    const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
+
+    const discordResp = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=100`, {
+      method: "GET",
+      headers: { Authorization: `Bot ${botToken}` }
+    });
+
+    const apiJson = await discordResp.json();
+    const historyJson = JSON.stringify(apiJson);
+    const truncatedHistoryJson = historyJson;
+
+    const userInstruction =
+      prompt.length > 0
+        ? `The user ${userName} gives this instruction: ${prompt}`
+        : "";
+
+    const aiResp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicApiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 512,
+        system: `You are a helpful assistant, named DE0CH's AI Bot, participating in the conversation. Respond with JSON in the format: {"message": "..."}.\n\nInstruction: participate by forming a reply. ${userInstruction}`,
+        messages: [
+          {
+            role: "user",
+            content: `Here is the Discord channel chat history JSON:\n\n${truncatedHistoryJson}`
+          }
+        ]
+      })
+    });
+
+    const aiData = await aiResp.json();
+    const aiText = aiData?.content?.[0]?.text as string;
+    const parsed = JSON.parse(aiText) as { message?: string };
+    const message = parsed.message ?? aiText;
+
+  
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: message })
+    });
+
     return;
   }
 
